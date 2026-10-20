@@ -1,256 +1,232 @@
 ﻿using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Pipelines;
-using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 
 namespace Secs4Net;
 
-public sealed class PipeDecoder
+/// <summary>
+/// One HSMS message as received: its header and, for a data message with text, the decoded root item.
+/// </summary>
+internal readonly record struct DecodedMessage(MessageHeader Header, Item? RootItem);
+
+/// <summary>
+/// Raised when the received byte stream breaks a rule of SEMI E37 / E37.1 that does not depend on the
+/// connection state. HSMS-SS without the Reject procedure treats every such case as a communications
+/// failure and closes the TCP/IP connection (E37.1 §7.5, Tables 1 and 2).
+/// </summary>
+internal sealed class HsmsProtocolException(string message) : Exception(message);
+
+/// <summary>
+/// Frames HSMS messages from one TCP/IP connection's byte stream (SEMI E37 §8.2). Each message is
+/// framed by its Message Length; the text is decoded only once all of it has arrived, so a text that
+/// does not fill its length exactly can never shift the framing of the next message.
+/// </summary>
+internal sealed class PipeDecoder
 {
+    private const int LengthFieldSize = 4;
+    private const int HeaderSize = 10;
+    private const ushort ControlSessionId = 0xFFFF;
+
     private readonly PipeReader _reader;
-    public PipeWriter Input { get; }
+    private readonly TimeSpan _t8;
 
-    private readonly Channel<MessageHeader> _controlMessageChannel = Channel
-        .CreateUnbounded<MessageHeader>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = true,
-            AllowSynchronousContinuations = true,
-        });
-
-    private readonly Channel<(MessageHeader header, Item? rootItem)> _dataMessageChannel = Channel
-        .CreateUnbounded<(MessageHeader header, Item? rootItem)>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = true,
-            AllowSynchronousContinuations = false,
-        });
-
-    public PipeDecoder(PipeReader reader, PipeWriter input)
+    public PipeDecoder(PipeReader reader, int t8Milliseconds)
     {
         _reader = reader;
-        Input = input;
+        _t8 = TimeSpan.FromMilliseconds(t8Milliseconds);
     }
 
-    internal IAsyncEnumerable<MessageHeader> GetControlMessages(CancellationToken cancellation)
-        => _controlMessageChannel.Reader.ReadAllAsync(cancellation);
+    /// <summary>
+    /// Reads the next message. Returns null when the remote entity closed the connection between messages.
+    /// </summary>
+    /// <exception cref="HsmsProtocolException">The stream violates SEMI E37 / E37.1.</exception>
+    /// <exception cref="TimeoutException">T8 expired while a message was being received (E37 §9.2.3.1).</exception>
+    public async ValueTask<DecodedMessage?> ReadMessageAsync(CancellationToken cancellation)
+    {
+        // Waiting for the first byte of a message is idle time; T8 starts only once a message has begun.
+        var result = await _reader.ReadAsync(cancellation).ConfigureAwait(false);
+        if (result.Buffer.IsEmpty && result.IsCompleted)
+        {
+            return null;
+        }
 
-    public IAsyncEnumerable<(MessageHeader header, Item? rootItem)> GetDataMessages(CancellationToken cancellation)
-        => _dataMessageChannel.Reader.ReadAllAsync(cancellation);
+        var buffer = await ReadAtLeastAsync(result, LengthFieldSize, cancellation).ConfigureAwait(false);
+        var messageLength = ReadMessageLength(buffer);
+        if (messageLength < HeaderSize)
+        {
+            throw new HsmsProtocolException(
+                $"Message Length {messageLength} is less than the 10-byte header (SEMI E37 §8.2.4, E37.1 Tables 1 and 2).");
+        }
 
-    public Task StartAsync(CancellationToken cancellation)
-        => DecodeLoopAsync(_controlMessageChannel.Writer, _dataMessageChannel.Writer, _reader, cancellation);
+        var frameLength = LengthFieldSize + (long)messageLength;
+        buffer = await ReadAtLeastAsync(_reader, buffer, frameLength, cancellation).ConfigureAwait(false);
+        var frame = buffer.Slice(0, frameLength);
+        try
+        {
+            return DecodeFrame(frame.Slice(LengthFieldSize), messageLength);
+        }
+        finally
+        {
+            _reader.AdvanceTo(frame.End);
+        }
+    }
 
-    private static async Task DecodeLoopAsync(
-        ChannelWriter<MessageHeader> controlMessageWriter,
-        ChannelWriter<(MessageHeader header, Item? rootItem)> dataMessageWriter,
+    private static uint ReadMessageLength(ReadOnlySequence<byte> buffer)
+    {
+        Span<byte> lengthBytes = stackalloc byte[LengthFieldSize];
+        buffer.Slice(0, LengthFieldSize).CopyTo(lengthBytes);
+        return BinaryPrimitives.ReadUInt32BigEndian(lengthBytes);
+    }
+
+    private static DecodedMessage DecodeFrame(ReadOnlySequence<byte> message, uint messageLength)
+    {
+        MessageHeader header = default;
+        message.Slice(0, HeaderSize).CopyTo(header);
+        ThrowIfHeaderInvalid(header, messageLength);
+
+        if (messageLength == HeaderSize)
+        {
+            return new DecodedMessage(header, RootItem: null);
+        }
+
+        var text = message.Slice(HeaderSize);
+        Item rootItem;
+        try
+        {
+            rootItem = Item.DecodeFromFullBuffer(ref text);
+        }
+        catch (Exception ex) when (ex is not HsmsProtocolException)
+        {
+            throw new HsmsProtocolException($"The message text is not a valid SECS-II item ({ex.Message}).");
+        }
+
+        if (!text.IsEmpty)
+        {
+            throw new HsmsProtocolException(
+                $"The message text holds {text.Length} byte(s) after its root SECS-II item; Message Length does not match the text.");
+        }
+
+        return new DecodedMessage(header, rootItem);
+    }
+
+    /// <summary>
+    /// The header rules of SEMI E37 §8 and E37.1 §8 that hold in every connection state. An HSMS-SS entity
+    /// without Reject treats a violation as a communications failure (E37.1 §7.5 and §7.7).
+    /// </summary>
+    private static void ThrowIfHeaderInvalid(ReadOnlySpan<byte> header, uint messageLength)
+    {
+        // MessageHeader holds the ten header bytes as received (SEMI E37 Table 3).
+        var sessionId = BinaryPrimitives.ReadUInt16BigEndian(header);
+        var byte2 = header[2];
+        var byte3 = header[3];
+        var pType = header[4];
+        var sType = (MessageType)header[5];
+
+        if (pType != 0)
+        {
+            throw new HsmsProtocolException($"PType {pType} is not supported; HSMS-SS messages are PType 0 (SEMI E37.1 §8.2).");
+        }
+
+        if (!Enum.IsDefined(sType))
+        {
+            throw new HsmsProtocolException(
+                $"SType {(byte)sType} is not defined by HSMS; HSMS-SS permits only HSMS-defined STypes (SEMI E37.1 §8.3).");
+        }
+
+        if (sType == MessageType.DataMessage)
+        {
+            if ((sessionId & 0x8000) != 0)
+            {
+                throw new HsmsProtocolException(
+                    $"Data message Session ID 0x{sessionId:X4} has its high-order bit set (SEMI E37.1 §8.1).");
+            }
+
+            return;
+        }
+
+        if (messageLength != HeaderSize)
+        {
+            throw new HsmsProtocolException(
+                $"Control message {sType} has Message Length {messageLength}; control messages are header only (SEMI E37 §8.3, §9.3.3.1).");
+        }
+
+        if (sessionId != ControlSessionId)
+        {
+            throw new HsmsProtocolException(
+                $"Control message {sType} has Session ID 0x{sessionId:X4}; HSMS-SS control messages use 0xFFFF (SEMI E37.1 §8.1.1).");
+        }
+
+        if (byte2 != 0 && sType != MessageType.Reject_req)
+        {
+            throw new HsmsProtocolException($"Control message {sType} has header byte 2 = {byte2}; it must be 0 (SEMI E37 §8.3).");
+        }
+
+        if (byte3 != 0 && !CarriesStatusInByte3(sType))
+        {
+            throw new HsmsProtocolException($"Control message {sType} has header byte 3 = {byte3}; it must be 0 (SEMI E37 §8.3).");
+        }
+    }
+
+    private static bool CarriesStatusInByte3(MessageType sType)
+    {
+        return sType is MessageType.SelectResponse or MessageType.Deselect_rsp or MessageType.Reject_req;
+    }
+
+    private ValueTask<ReadOnlySequence<byte>> ReadAtLeastAsync(ReadResult first, long required, CancellationToken cancellation)
+    {
+        if (first.Buffer.Length >= required)
+        {
+            return new(first.Buffer);
+        }
+
+        ThrowIfCompletedMidMessage(first);
+        return ReadAtLeastAsync(_reader, first.Buffer, required, cancellation);
+    }
+
+    /// <summary>
+    /// Reads until <paramref name="required"/> bytes of the current message are buffered. Every read here
+    /// is inside a message, so each one is bounded by T8, the maximum time between successive bytes of a
+    /// single HSMS message (SEMI E37 §9.2.3).
+    /// </summary>
+    private async ValueTask<ReadOnlySequence<byte>> ReadAtLeastAsync(
         PipeReader reader,
+        ReadOnlySequence<byte> buffer,
+        long required,
         CancellationToken cancellation)
     {
-        var stack = new Stack<ItemList>(capacity: 8);
-        Item item;
-        var totalLengthBytes = new byte[4];
-        MessageHeader header = default;
-        // PipeReader peek first
-        var buffer = await PipeReadAsync(reader, required: 4, cancellation).ConfigureAwait(false);
-        while (!cancellation.IsCancellationRequested)
+        while (buffer.Length < required)
         {
-        Start:
-            // 0: get total message length 4 bytes
-            if (IsBufferInsufficient(reader, ref buffer, required: 4))
-            {
-                buffer = await PipeReadAsync(reader, required: 4, cancellation).ConfigureAwait(false);
-            }
-            var totalLengthSeq = buffer.Slice(buffer.Start, 4);
-            totalLengthSeq.CopyTo(totalLengthBytes);
-            uint messageLength = BinaryPrimitives.ReadUInt32BigEndian(totalLengthBytes);
-            buffer = buffer.Slice(totalLengthSeq.End);
-
-            Debug.WriteLine($"Get new message with length: {messageLength}");
-
-            // 1: get message header 10 bytes
-            if (IsBufferInsufficient(reader, ref buffer, required: 10))
-            {
-                buffer = await PipeReadAsync(reader, required: 10, cancellation).ConfigureAwait(false);
-            }
-            var messageHeaderSeq = buffer.Slice(buffer.Start, 10);
-            messageHeaderSeq.CopyTo(header);
-            buffer = buffer.Slice(messageHeaderSeq.End);
-
-            Debug.WriteLine($"Get message(id:{header.Id:X8}) header");
-
-            if (messageLength == 10) // only message header
-            {
-                if (header.MessageType == MessageType.DataMessage)
-                {
-                    await dataMessageWriter.WriteAsync((header, rootItem: null), cancellation).ConfigureAwait(false);
-                }
-                else
-                {
-                    await controlMessageWriter.WriteAsync(header, cancellation).ConfigureAwait(false);
-                }
-                continue;
-            }
-
-            if (buffer.Length >= messageLength - 10)
-            {
-                var rootItem = Item.DecodeFromFullBuffer(ref buffer);
-
-                Debug.WriteLine($"Get data message(id:{header.Id:X8}) with total bytes: {messageLength} and decoded directly");
-
-                await dataMessageWriter.WriteAsync((header, rootItem), cancellation).ConfigureAwait(false);
-                continue;
-            }
-
-        GetNewItem:
-            // 2: get _format + _lengthByteCount(2bit) 1 byte
-            if (IsBufferInsufficient(reader, ref buffer, required: 1))
-            {
-                buffer = await PipeReadAsync(reader, required: 1, cancellation).ConfigureAwait(false);
-            }
-
-            var formatSeq = buffer.Slice(0, 1);
-            Item.DecodeFormatAndLengthByteCount(formatSeq, out var itemFormat, out var itemContentLengthByteCount);
-
-            buffer = buffer.Slice(formatSeq.End);
-
-            // 3: get _itemLength bytes(size= _lengthByteCount), at most 3 byte
-            if (IsBufferInsufficient(reader, ref buffer, required: itemContentLengthByteCount))
-            {
-                buffer = await PipeReadAsync(reader, required: itemContentLengthByteCount, cancellation).ConfigureAwait(false);
-            }
-            var itemContentLengthBytes = buffer.Slice(0, itemContentLengthByteCount);
-            var itemContentLength = Item.DecodeDataLength(itemContentLengthBytes);
-            buffer = buffer.Slice(itemContentLengthBytes.End);
-
-            // 4: get item content
-            if (itemFormat is SecsFormat.List)
-            {
-                if (itemContentLength == 0)
-                {
-                    item = Item.L();
-                    Debug.WriteLine($"Decoded List[0]");
-                }
-                else
-                {
-                    Debug.WriteLine($"Decoded List[{itemContentLength}]");
-                    stack.Push(new ItemList(size: itemContentLength));
-                    goto GetNewItem;
-                }
-            }
-            else
-            {
-                if (IsBufferInsufficient(reader, ref buffer, required: itemContentLength))
-                {
-                    buffer = await PipeReadAsync(reader, required: itemContentLength, cancellation).ConfigureAwait(false);
-                }
-                var itemDataBytes = buffer.Slice(0, itemContentLength);
-                item = Item.DecodeDataItem(itemFormat, itemDataBytes);
-                buffer = buffer.Slice(itemDataBytes.End);
-                Debug.WriteLine($"Decoded Item[{itemFormat}], length: {itemContentLength}");
-            }
-
-            if (stack.Count > 0)
-            {
-                var list = stack.Peek();
-                list.Add(item);
-                while (list.IsFull) //stack unwind when all List's Items has decoded
-                {
-                    item = Item.L(stack.Pop().Items);
-                    //Trace.WriteLine($"Unwind List[{item.Count}]");
-                    if (stack.Count > 0)
-                    {
-                        list = stack.Peek();
-                        list.Add(item);
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"Get data message(id:{header.Id:X8}) decoded by data chunked");
-                        await dataMessageWriter.WriteAsync((header, item), cancellation).ConfigureAwait(false);
-                        goto Start;
-                    }
-                }
-                goto GetNewItem;
-            }
-            else
-            {
-                Debug.WriteLine($"Get data message(id:{header.Id:X8}) decoded by data chunked");
-                await dataMessageWriter.WriteAsync((header, item), cancellation).ConfigureAwait(false);
-            }
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool IsBufferInsufficient(PipeReader reader, ref ReadOnlySequence<byte> remainedBuffer, int required)
-    {
-        if (remainedBuffer.Length >= required)
-        {
-            return false;
-        }
-
-        reader.AdvanceTo(remainedBuffer.Start);
-        return !PipeTryRead(reader, required, ref remainedBuffer);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool PipeTryRead(PipeReader reader, int required, ref ReadOnlySequence<byte> buffer)
-    {
-        if (reader.TryRead(out var result))
-        {
+            reader.AdvanceTo(consumed: buffer.Start, examined: buffer.End);
+            var result = await ReadWithinT8Async(reader, cancellation).ConfigureAwait(false);
             buffer = result.Buffer;
-            if (buffer.Length >= required)
+            if (buffer.Length < required)
             {
-                return true;
-            }
-            else
-            {
-                reader.AdvanceTo(consumed: buffer.Start, examined: buffer.End);
+                ThrowIfCompletedMidMessage(result);
             }
         }
 
-        return false;
+        return buffer;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    [SkipLocalsInit]
-    private static ValueTask<ReadOnlySequence<byte>> PipeReadAsync(PipeReader reader, int required, CancellationToken cancellation)
+    private async ValueTask<ReadResult> ReadWithinT8Async(PipeReader reader, CancellationToken cancellation)
     {
-        ReadOnlySequence<byte> buffer = ReadOnlySequence<byte>.Empty;
-        if (PipeTryRead(reader, required, ref buffer))
+        using var t8 = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        t8.CancelAfter(_t8);
+        try
         {
-            return new(buffer);
+            return await reader.ReadAsync(t8.Token).ConfigureAwait(false);
         }
-
-        return SlowPipeReadAsync(reader, required, cancellation);
-
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-        static async ValueTask<ReadOnlySequence<byte>> SlowPipeReadAsync(PipeReader reader, int required, CancellationToken cancellation)
+        catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
-            while (true)
-            {
-                //StartT8Timer();
-                var result = await reader.ReadAsync(cancellation).ConfigureAwait(false);
-                //StopT8Timer();
-                var buffer = result.Buffer;
-
-                if (buffer.Length >= required)
-                {
-                    return buffer;
-                }
-                reader.AdvanceTo(consumed: buffer.Start, examined: buffer.End);
-            }
+            throw new TimeoutException($"T8 Timeout: no byte of the current HSMS message arrived within {_t8.TotalSeconds} sec.");
         }
     }
 
-    private sealed class ItemList(int size)
+    private static void ThrowIfCompletedMidMessage(ReadResult result)
     {
-        private readonly Item[] _items = new Item[size];
-        private int _current;
-
-        public bool IsFull => _current == _items.Length;
-        public void Add(Item item) => _items[_current++] = item;
-        public Item[] Items => _items;
+        if (result.IsCompleted)
+        {
+            throw new HsmsProtocolException("The TCP/IP connection closed in the middle of an HSMS message.");
+        }
     }
 }

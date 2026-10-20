@@ -41,5 +41,5 @@ public interface ISecsConnection
     void Reconnect();
 
     internal Task SendAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken);
-    internal IAsyncEnumerable<(MessageHeader header, Item? rootItem)> GetDataMessages(CancellationToken cancellation);
+    internal IAsyncEnumerable<DecodedMessage> GetDataMessages(CancellationToken cancellation);
 }

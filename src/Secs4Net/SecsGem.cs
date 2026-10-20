@@ -63,9 +63,9 @@ public sealed class SecsGem : ISecsGem, IDisposable
         Task.Run(async () =>
         {
             var cancellationToken = _cancellationSourceForDataMessageProcessing.Token;
-            await foreach (var (header, rootItem) in _hsmsConnector.GetDataMessages(cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            await foreach (var message in _hsmsConnector.GetDataMessages(cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
-                await ProcessDataMessageAsync(header, rootItem, cancellationToken).ConfigureAwait(continueOnCapturedContext: false);
+                await ProcessDataMessageAsync(message.Header, message.RootItem, cancellationToken).ConfigureAwait(continueOnCapturedContext: false);
             }
         });
     }
@@ -136,7 +136,9 @@ public sealed class SecsGem : ISecsGem, IDisposable
 
         try
         {
-            if (header.DeviceId != DeviceId && header.S != 9 && header.F != 1)
+            // SEMI E37.1 §8.1: an unrecognized Device ID is not a bad header; it is answered with S9F1
+            // (SEMI E5 §10.13). An S9F1 is never answered with another one.
+            if (header.DeviceId != DeviceId && !IsUnrecognizedDeviceIdError(header))
             {
                 _logger.MessageIn(msg, header.Id);
                 _logger.Warning("Received Unrecognized Device Id Message");
@@ -193,6 +195,9 @@ public sealed class SecsGem : ISecsGem, IDisposable
             _logger.Error("Unhandled exception occurred when processing data message", msg, ex);
         }
     }
+
+    private static bool IsUnrecognizedDeviceIdError(MessageHeader header)
+        => header.S == 9 && header.F == 1;
 
     public void Dispose()
     {

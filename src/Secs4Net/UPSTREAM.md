@@ -82,12 +82,16 @@ To take a new upstream release:
 ## Packing
 
 ```powershell
-./pack.ps1                       # into LocalPackages of ALE_SecsGem's repository
-./pack.ps1 -Feed <feed folder>   # into another folder feed
+./pack.ps1                         # pack, then copy into ALE_SecsGem's LocalPackages if reachable
+./pack.ps1 -CopyTo <feed folder>   # copy into another folder feed
+./pack.ps1 -CopyTo ''              # pack only
 ```
 
-The default feed is the `LocalPackages` folder at the root of ALE_SecsGem's repository, from which
-ALE_SecsGem restores the package. Bump
-`<Version>` in `Secs4Net.csproj` on every change before packing: NuGet caches a package by id + version,
-so a re-packed version is ignored in favour of the cached copy. Then raise the `Secs4Net`
+`pack.ps1` always packs into this repository's `LocalPackages` folder (ignored by git). It then copies
+the package into the `LocalPackages` folder at the root of ALE_SecsGem's repository, from which
+ALE_SecsGem restores it, when that folder exists; otherwise it says so and leaves the package here.
+It refuses to overwrite a package of the same version that already exists there with different
+content (`-Force` overrides), because consumers keep the version they restored first.
+Bump `<Version>` in `Secs4Net.csproj` on every change before packing: NuGet caches a package by id +
+version, so a re-packed version is ignored in favour of the cached copy. Then raise the `Secs4Net`
 `PackageReference` in `ALE_SECSGEM.csproj` to the new version, and commit the new `.nupkg` with it.

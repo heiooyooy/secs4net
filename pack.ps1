@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Packs Secs4Net (HSMS-SS revision, branch hsms-ss) into ALE_SecsGem's local package folder.
+    Packs Secs4Net (HSMS-SS revision, branch hsms-ss) into the LocalPackages folder of ALE_SecsGem's repository.
     See src/Secs4Net/UPSTREAM.md.
 
 .EXAMPLE
@@ -8,7 +8,7 @@
     ./pack.ps1 -Feed D:\some\other\feed
 #>
 param(
-    [string]$Feed = 'D:\Atomwork_SVN\Turbo_ALE\Beta_Maintrunk\ALE_SecsGem\LocalPackages',
+    [string]$Feed = 'D:\Atomwork_SVN\Turbo_ALE\Beta_Maintrunk\LocalPackages',
     [string]$Configuration = 'Release'
 )
 

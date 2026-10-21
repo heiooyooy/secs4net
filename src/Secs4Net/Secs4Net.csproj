@@ -5,7 +5,18 @@
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<GenerateDocumentationFile>True</GenerateDocumentationFile>
 		<IsAotCompatible>true</IsAotCompatible>
-		<PackageReadmeFile>README.md</PackageReadmeFile>	
+		<PackageReadmeFile>UPSTREAM.md</PackageReadmeFile>
+	</PropertyGroup>
+
+	<!-- HSMS-SS revision for ALE_SecsGem (UPSTREAM.md). Not an official release: the package keeps the
+	     Secs4Net id and the upstream assembly version, and takes a fourth version part above upstream. -->
+	<PropertyGroup>
+		<Version>3.1.0.2</Version>
+		<AssemblyVersion>3.1.0.0</AssemblyVersion>
+		<Authors>mkjeff; AtomWork ALE</Authors>
+		<RepositoryUrl>https://github.com/heiooyooy/secs4net</RepositoryUrl>
+		<Description>Secs4Net 3.1.0 with SEMI E37 / E37.1 HSMS-SS conformance changes for ALE_SecsGem. Not an official upstream release; see UPSTREAM.md.</Description>
+		<IncludeSymbols>false</IncludeSymbols>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -32,7 +43,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Include="..\..\README.md">
+		<None Include="UPSTREAM.md">
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
 		</None>

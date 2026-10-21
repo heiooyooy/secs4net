@@ -1,13 +1,15 @@
 # Secs4Net — HSMS-SS revision for ALE_SecsGem
 
-Source: [mkjeff/secs4net](https://github.com/mkjeff/secs4net/tree/6f540a7540fc7a531d1d526c04375f4b05a7641f/src/Secs4Net),
-commit `6f540a7540fc7a531d1d526c04375f4b05a7641f`, the commit recorded in the official Secs4Net 3.1.0
-NuGet package. The MIT license is retained in `LICENSE`. Only `src/Secs4Net` is imported; the first
-commit that adds this folder holds it unmodified, so `git diff` against that commit shows every local change.
+This is the `hsms-ss` branch of [heiooyooy/secs4net](https://github.com/heiooyooy/secs4net), a fork of
+[mkjeff/secs4net](https://github.com/mkjeff/secs4net). Branch `base` mirrors upstream `base` and is never
+committed to; `hsms-ss` carries every local change. The changes started from upstream commit
+`6f540a7540fc7a531d1d526c04375f4b05a7641f`, the commit recorded in the official Secs4Net 3.1.0 NuGet
+package. Only `src/Secs4Net` is changed. `git diff base...hsms-ss` shows every local change.
 
 This is not an official Secs4Net release. The package keeps the `Secs4Net` id and assembly version
-3.1.0.0 so that Secs4Net.Json and Secs4Net.Sml bind to it, and is versioned 3.1.0.1 so NuGet never
-resolves the unmodified 3.1.0 in its place. `./pack-local-nuget.ps1` publishes it beside ALE_SecsGem.
+3.1.0.0 so that Secs4Net.Json and Secs4Net.Sml bind to it, and takes a fourth version part above
+3.1.0 so NuGet never resolves the unmodified 3.1.0 in its place. `Secs4Net.csproj` sets that version
+itself, overriding the upstream `Directory.Build.props`.
 
 ## Why
 
@@ -58,6 +60,33 @@ Item encoding, `SecsMessage`, `SecsGemOptions` and the reply-matching in `SecsGe
 
 ## Updating upstream
 
-Diff the new upstream `src/Secs4Net` against the import commit. Re-apply upstream changes to files
-not listed above directly; for `HsmsConnection.cs`, `PipeDecoder.cs`, `ISecsConnection.cs` and
-`SecsGem.cs`, merge them by hand against the behavior described here, then bump `<Version>`.
+Watch upstream releases on GitHub (Watch → Custom → Releases), or compare at any time:
+
+```powershell
+git fetch upstream
+git log hsms-ss..upstream/base --oneline     # upstream commits not merged yet
+git diff hsms-ss...upstream/base -- src/Secs4Net
+```
+
+To take a new upstream release:
+
+1. Fast-forward the mirror: `git switch base; git merge --ff-only upstream/base; git push origin base`.
+2. Merge it: `git switch hsms-ss; git merge base`. Upstream changes to files not listed above merge
+   directly. For `HsmsConnection.cs`, `PipeDecoder.cs`, `ISecsConnection.cs` and `SecsGem.cs`, resolve
+   conflicts against the behavior described here, and update this file.
+3. Set `<Version>` and `<AssemblyVersion>` in `Secs4Net.csproj` from the new upstream version (for
+   upstream 3.2.0: 3.2.0.1 and 3.2.0.0). The upstream version in `Directory.Build.props` does not
+   reach the package, because the project file overrides it.
+4. Run the upstream tests (`test/Secs4Net.UnitTests`), then pack.
+
+## Packing
+
+```powershell
+./pack.ps1                       # into ALE_SecsGem's local package folder
+./pack.ps1 -Feed <feed folder>   # into another folder feed
+```
+
+The default feed is `ALE_SecsGem/LocalPackages`, from which ALE_SecsGem restores the package. Bump
+`<Version>` in `Secs4Net.csproj` on every change before packing: NuGet caches a package by id + version,
+so a re-packed version is ignored in favour of the cached copy. Then raise the `Secs4Net`
+`PackageReference` in `ALE_SECSGEM.csproj` to the new version, and commit the new `.nupkg` with it.

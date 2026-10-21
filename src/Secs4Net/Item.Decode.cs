@@ -54,6 +54,10 @@ public partial class Item
 
         var formatSeq = bytes.Slice(0, 1);
         DecodeFormatAndLengthByteCount(formatSeq, out var format, out var lengthByteCount);
+        if (lengthByteCount == 0)
+        {
+            throw new SecsException("SECS-II item header declares no length bytes (SEMI E5 §9.2.1).");
+        }
 
         var dataLengthSeq = bytes.Slice(formatSeq.End, lengthByteCount);
         var dataLength = DecodeDataLength(dataLengthSeq);

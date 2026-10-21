@@ -53,13 +53,15 @@ Other:
 - `Item.DecodeFromFullBuffer` stops at 256 nested List levels (`Item.MaxListNestingDepth`). Decoding
   recurses per level, so a deeper text would otherwise end the process with a stack overflow; the
   failure closes the connection like any other invalid text. SEMI E5 sets no nesting maximum.
+- `Item.DecodeFromFullBuffer` fails an item header whose format byte declares zero length bytes
+  (SEMI E5 §9.2.1: illegal, produces an error); upstream decoded it as an empty item.
 - `SecsGem`: the S9F1 guard for an unrecognized Device ID now exempts only S9F1 itself (upstream
   exempted every message with F = 1 or S = 9).
 - `PipeDecoder` is internal; `ISecsConnection.GetDataMessages` yields `DecodedMessage`. The public
   `HsmsConnection` / `SecsGem` API is unchanged. Header checks read the raw bytes that 3.1.0's
   `MessageHeader` (an inline array) holds.
 
-Apart from that limit, Item encoding and decoding, `SecsMessage`, `SecsGemOptions` and the reply-matching
+Apart from those two checks, Item encoding and decoding, `SecsMessage`, `SecsGemOptions` and the reply-matching
 in `SecsGem` remain upstream code.
 
 ## Updating upstream

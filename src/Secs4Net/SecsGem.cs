@@ -113,7 +113,7 @@ public sealed class SecsGem : ISecsGem, IDisposable
         catch (TimeoutException)
         {
             _logger.Error($"T3 Timeout[id=0x{id:X8}]: {T3 / 1000} sec.");
-            throw new SecsException(message, Resources.T3Timeout);
+            throw new SecsTransactionTimeoutException(message, CreateHeader(message, id, DeviceId), Resources.T3Timeout);
         }
         finally
         {
@@ -212,9 +212,9 @@ public sealed class SecsGem : ISecsGem, IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void EncodeMessage(SecsMessage msg, int id, ushort deviceId, ArrayPoolBufferWriter<byte> buffer)
+    private static MessageHeader CreateHeader(SecsMessage msg, int id, ushort deviceId)
     {
-        var header = new MessageHeader
+        return new MessageHeader
         {
             DeviceId = deviceId,
             ReplyExpected = msg.ReplyExpected,
@@ -223,6 +223,12 @@ public sealed class SecsGem : ISecsGem, IDisposable
             MessageType = MessageType.DataMessage,
             Id = id
         };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void EncodeMessage(SecsMessage msg, int id, ushort deviceId, ArrayPoolBufferWriter<byte> buffer)
+    {
+        var header = CreateHeader(msg, id, deviceId);
         buffer.GetSpan(14);
         // reserve 4 byte for total length
         buffer.Advance(sizeof(int));

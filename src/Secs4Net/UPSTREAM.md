@@ -55,13 +55,17 @@ Other:
   failure closes the connection like any other invalid text. SEMI E5 sets no nesting maximum.
 - `Item.DecodeFromFullBuffer` fails an item header whose format byte declares zero length bytes
   (SEMI E5 §9.2.1: illegal, produces an error); upstream decoded it as an empty item.
+- `SecsGem`: T3 expiry throws `SecsTransactionTimeoutException` (a `TimeoutException`) carrying the primary
+  message and the header it was sent with, so the equipment can answer with S9F9, whose text is that
+  header (E5 §10.13, E30 §7.10.3.2). Upstream threw a `SecsException` without the System Bytes, which
+  could not be told apart from an SxF0 or S9Fx reply.
 - `SecsGem`: the S9F1 guard for an unrecognized Device ID now exempts only S9F1 itself (upstream
   exempted every message with F = 1 or S = 9).
 - `PipeDecoder` is internal; `ISecsConnection.GetDataMessages` yields `DecodedMessage`. The public
   `HsmsConnection` / `SecsGem` API is unchanged. Header checks read the raw bytes that 3.1.0's
   `MessageHeader` (an inline array) holds.
 
-Apart from those two checks, Item encoding and decoding, `SecsMessage`, `SecsGemOptions` and the reply-matching
+Apart from those changes, Item encoding and decoding, `SecsMessage`, `SecsGemOptions` and the reply-matching
 in `SecsGem` remain upstream code.
 
 ## Updating upstream

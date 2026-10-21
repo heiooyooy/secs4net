@@ -11,7 +11,7 @@
 	<!-- HSMS-SS revision for ALE_SecsGem (UPSTREAM.md). Not an official release: the package keeps the
 	     Secs4Net id and the upstream assembly version, and takes a fourth version part above upstream. -->
 	<PropertyGroup>
-		<Version>3.1.0.2</Version>
+		<Version>3.1.0.3</Version>
 		<AssemblyVersion>3.1.0.0</AssemblyVersion>
 		<Authors>mkjeff; AtomWork ALE</Authors>
 		<RepositoryUrl>https://github.com/heiooyooy/secs4net</RepositoryUrl>

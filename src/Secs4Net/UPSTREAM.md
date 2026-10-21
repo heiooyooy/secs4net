@@ -50,13 +50,17 @@ Protocol behavior (`HsmsConnection.cs`, `PipeDecoder.cs`):
 
 Other:
 
+- `Item.DecodeFromFullBuffer` stops at 256 nested List levels (`Item.MaxListNestingDepth`). Decoding
+  recurses per level, so a deeper text would otherwise end the process with a stack overflow; the
+  failure closes the connection like any other invalid text. SEMI E5 sets no nesting maximum.
 - `SecsGem`: the S9F1 guard for an unrecognized Device ID now exempts only S9F1 itself (upstream
   exempted every message with F = 1 or S = 9).
 - `PipeDecoder` is internal; `ISecsConnection.GetDataMessages` yields `DecodedMessage`. The public
   `HsmsConnection` / `SecsGem` API is unchanged. Header checks read the raw bytes that 3.1.0's
   `MessageHeader` (an inline array) holds.
 
-Item encoding, `SecsMessage`, `SecsGemOptions` and the reply-matching in `SecsGem` remain upstream code.
+Apart from that limit, Item encoding and decoding, `SecsMessage`, `SecsGemOptions` and the reply-matching
+in `SecsGem` remain upstream code.
 
 ## Updating upstream
 
@@ -72,7 +76,7 @@ To take a new upstream release:
 
 1. Fast-forward the mirror: `git switch base; git merge --ff-only upstream/base; git push origin base`.
 2. Merge it: `git switch hsms-ss; git merge base`. Upstream changes to files not listed above merge
-   directly. For `HsmsConnection.cs`, `PipeDecoder.cs`, `ISecsConnection.cs` and `SecsGem.cs`, resolve
+   directly. For `HsmsConnection.cs`, `PipeDecoder.cs`, `ISecsConnection.cs`, `SecsGem.cs` and `Item.Decode.cs`, resolve
    conflicts against the behavior described here, and update this file.
 3. Set `<Version>` and `<AssemblyVersion>` in `Secs4Net.csproj` from the new upstream version (for
    upstream 3.2.0: 3.2.0.1 and 3.2.0.0). The upstream version in `Directory.Build.props` does not

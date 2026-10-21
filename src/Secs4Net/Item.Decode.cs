@@ -34,10 +34,24 @@ public partial class Item
         return dataLength;
     }
 
+    /// <summary>
+    /// Deepest List nesting decoded. Decoding recurses once per level, and a deeper text would end
+    /// the process with a stack overflow instead of failing the message; SEMI E5 sets no maximum.
+    /// </summary>
+    internal const int MaxListNestingDepth = 256;
+
+    public static Item DecodeFromFullBuffer(ref ReadOnlySequence<byte> bytes)
+        => DecodeFromFullBuffer(ref bytes, depth: 0);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     [SkipLocalsInit]
-    public static Item DecodeFromFullBuffer(ref ReadOnlySequence<byte> bytes)
+    private static Item DecodeFromFullBuffer(ref ReadOnlySequence<byte> bytes, int depth)
     {
+        if (depth > MaxListNestingDepth)
+        {
+            throw new SecsException($"SECS-II List nesting exceeds {MaxListNestingDepth} levels.");
+        }
+
         var formatSeq = bytes.Slice(0, 1);
         DecodeFormatAndLengthByteCount(formatSeq, out var format, out var lengthByteCount);
 
@@ -55,7 +69,7 @@ public partial class Item
             var items = new Item[dataLength];
             foreach (ref var subItem in items.AsSpan())
             {
-                subItem = DecodeFromFullBuffer(ref bytes);
+                subItem = DecodeFromFullBuffer(ref bytes, depth + 1);
             }
 
             return L(items);
